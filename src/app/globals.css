@@ -1,26 +1,32 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+html, body { height: 100%; }
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: "BIZ UDPGothic", "Hiragino Sans", "Yu Gothic UI", "Noto Sans JP", system-ui, sans-serif;
+  background: #eef2f6;
+  color: #1f2a44;
+  -webkit-text-size-adjust: 100%;
 }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: .4rem;
+  min-height: 44px; padding: .55rem 1rem; border-radius: .6rem;
+  border: 1px solid #cbd5e1; background: #fff; color: #1f2a44;
+  font-weight: 700; font-size: .95rem; cursor: pointer;
+}
+.btn:hover { background: #f1f5f9; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary { background: #1f2a44; border-color: #1f2a44; color: #fff; }
+.btn-primary:hover { background: #2c3a5e; }
+.btn-danger { border-color: #fca5a5; color: #b91c1c; }
+.btn-danger:hover { background: #fef2f2; }
+.btn-on { background: #1f2a44; border-color: #1f2a44; color: #fff; }
+
+.input {
+  width: 100%; padding: .6rem .8rem; border-radius: .6rem;
+  border: 1px solid #cbd5e1; background: #fff; font-size: 1rem;
+}
+.btn:focus-visible, .input:focus-visible { outline: 3px solid #60a5fa; outline-offset: 1px; }
+.label { display: block; margin-bottom: .3rem; font-size: .9rem; font-weight: 700; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

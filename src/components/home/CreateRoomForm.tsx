@@ -1,0 +1,135 @@
+'use client';
+import { useRef, useState } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
+import { supabase } from '@/lib/supabase';
+import { uploadFile } from '@/lib/upload';
+import { setTeacherAuthed } from '@/lib/identity';
+import { errMsg, uuid } from '@/lib/util';
+
+export default function CreateRoomForm() {
+  const [title, setTitle] = useState('');
+  const [passcode, setPasscode] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [drag, setDrag] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [roomId, setRoomId] = useState<string | null>(null);
+  const [pw, setPw] = useState('');
+  const [code, setCode] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const pick = (f?: File | null) => {
+    if (!f) return;
+    if (!f.name.toLowerCase().endsWith('.glb')) return setError('.glb ファイルを選んでください。');
+    setError(null);
+    setFile(f);
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!file || !title.trim() || !passcode.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const glb_url = await uploadFile(`models/${uuid()}.glb`, file, 'model/gltf-binary');
+      // 6桁のルームIDを自動発行（重複したら作り直す）
+      let created: { id: string; code: string } | null = null;
+      for (let i = 0; i < 5 && !created; i++) {
+        const c = String(Math.floor(Math.random() * 900000) + 100000);
+        const { data, error: err } = await supabase
+          .from('rooms')
+          .insert({ title: title.trim(), glb_url, teacher_passcode: passcode, join_code: c, join_password: pw })
+          .select('id')
+          .single();
+        if (!err) created = { id: data.id, code: c };
+        else if (err.code !== '23505') throw err;
+      }
+      if (!created) throw new Error('ルームIDを発行できませんでした。もう一度お試しください。');
+      setTeacherAuthed(created.id); // 作成した端末はそのまま教員として入室できる
+      setCode(created.code);
+      setRoomId(created.id);
+    } catch (e) {
+      setError(`ルームを作成できませんでした：${errMsg(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = async (key: string, text: string) => {
+    await navigator.clipboard.writeText(text);
+    setCopied(key);
+    setTimeout(() => setCopied(null), 1500);
+  };
+
+  if (roomId) {
+    const origin = window.location.origin;
+    const studentUrl = `${origin}/room/${roomId}`;
+    const teacherUrl = `${studentUrl}?role=teacher`;
+    return (
+      <div className="mt-4 space-y-5">
+        <p className="font-bold text-emerald-700">ルームをつくりました。</p>
+        <div className="rounded-xl bg-slate-900 p-4 text-white">
+          <p className="text-sm text-slate-300">生徒はトップ画面でこの2つを入力して入室します</p>
+          <p className="mt-2 text-lg">ルームID　<span className="font-mono text-3xl font-bold tracking-widest">{code}</span></p>
+          <p className="text-lg">パスワード　<span className="font-mono text-3xl font-bold tracking-widest">{pw}</span></p>
+        </div>
+        <div className="flex flex-col items-start gap-4 sm:flex-row">
+          <div className="rounded-xl bg-white p-2 ring-1 ring-slate-200">
+            <QRCodeSVG value={studentUrl} size={148} />
+          </div>
+          <div className="min-w-0 flex-1 space-y-3">
+            <div>
+              <p className="label">生徒用URL（QRコードと同じ）</p>
+              <p className="break-all rounded-lg bg-slate-100 p-2 text-sm">{studentUrl}</p>
+              <button className="btn mt-2" onClick={() => copy('s', studentUrl)}>{copied === 's' ? 'コピーしました' : 'URLをコピー'}</button>
+            </div>
+            <p className="text-sm text-slate-600">ルームID：<span className="break-all font-mono">{roomId}</span></p>
+          </div>
+        </div>
+        <div>
+          <p className="label">教員用入室リンク（パスコードが必要です）</p>
+          <p className="break-all rounded-lg bg-slate-100 p-2 text-sm">{teacherUrl}</p>
+          <div className="mt-2 flex gap-2">
+            <button className="btn" onClick={() => copy('t', teacherUrl)}>{copied === 't' ? 'コピーしました' : 'リンクをコピー'}</button>
+            <a className="btn btn-primary" href={teacherUrl}>先生として入室</a>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={submit} className="mt-4 space-y-4">
+      <div>
+        <label className="label" htmlFor="t">授業タイトル</label>
+        <input id="t" className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例：地層の観察の振り返り" required />
+      </div>
+      <div>
+        <p className="label">3Dモデル（.glb）</p>
+        <div
+          onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+          onDragLeave={() => setDrag(false)}
+          onDrop={(e) => { e.preventDefault(); setDrag(false); pick(e.dataTransfer.files[0]); }}
+          onClick={() => inputRef.current?.click()}
+          className={`cursor-pointer rounded-xl border-2 border-dashed p-6 text-center text-sm ${drag ? 'border-blue-500 bg-blue-50' : 'border-slate-300 bg-slate-50'}`}
+        >
+          {file ? <span className="font-bold">{file.name}（{(file.size / 1024 / 1024).toFixed(1)} MB）</span> : 'ここに .glb をドラッグ＆ドロップ、またはクリックして選ぶ'}
+          <input ref={inputRef} type="file" accept=".glb,model/gltf-binary" hidden onChange={(e) => pick(e.target.files?.[0])} />
+        </div>
+      </div>
+      <div>
+        <label className="label" htmlFor="jp">生徒用パスワード（数字4桁）</label>
+        <input id="jp" className="input" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} value={pw} onChange={(e) => setPw(e.target.value.replace(/\D/g, ''))} placeholder="例：1234" required />
+      </div>
+      <div>
+        <label className="label" htmlFor="p">教員用パスコード</label>
+        <input id="p" className="input" value={passcode} onChange={(e) => setPasscode(e.target.value)} placeholder="先生だけが知っている言葉" required />
+      </div>
+      {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+      <button className="btn btn-primary w-full" disabled={busy || !file || !title.trim() || !passcode.trim() || pw.length !== 4}>
+        {busy ? 'アップロード中…' : 'ルームをつくる'}
+      </button>
+    </form>
+  );
+}
