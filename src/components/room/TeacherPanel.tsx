@@ -3,8 +3,9 @@ import { useState } from 'react';
 import { GROUPS } from '@/lib/groups';
 import type { AnimState, DisplayMode, Room } from '@/lib/types';
 
-export default function TeacherPanel({ room, pinCount, groupFilter, clips, camLocked, onFilter, onMode, onLock, onSync, onCamLock, onOpenList, onAnim }: {
-  room: Room; pinCount: number; groupFilter: string; clips: { name: string; duration: number }[]; camLocked: boolean;
+export default function TeacherPanel({ room, pinCount, groupFilter, clips, camLocked, camFollow, filterShared, onFilter, onToggleFilterShared, onMode, onLock, onSync, onCamLock, onCamFollow, onOpenList, onAnim }: {
+  room: Room; pinCount: number; groupFilter: string; clips: { name: string; duration: number }[]; camLocked: boolean; camFollow: boolean;
+  filterShared: boolean; onToggleFilterShared: () => void; onCamFollow: () => void;
   onFilter: (g: string) => void; onMode: (m: DisplayMode) => void; onLock: (v: boolean) => void;
   onSync: () => void; onCamLock: () => void; onOpenList: () => void; onAnim: (patch: Partial<AnimState>) => void;
 }) {
@@ -32,6 +33,9 @@ export default function TeacherPanel({ room, pinCount, groupFilter, clips, camLo
               <option value="all">全員分を表示</option>
               {GROUPS.map((g) => <option key={g.name} value={g.name}>{g.name}のみ</option>)}
             </select>
+            <button className={`btn mt-2 w-full ${filterShared ? 'btn-on' : ''}`} onClick={onToggleFilterShared} aria-pressed={filterShared}>
+              {filterShared ? '全員の画面に適用中（タップで解除）' : '全員の画面にも適用する'}
+            </button>
           </div>
           <button className={`btn w-full ${room.is_locked ? 'btn-on' : ''}`} onClick={() => onLock(!room.is_locked)} aria-pressed={room.is_locked}>
             {room.is_locked ? '投稿ロック中（タップで解除）' : '投稿をロックする'}
@@ -41,8 +45,13 @@ export default function TeacherPanel({ room, pinCount, groupFilter, clips, camLo
             <p className="label !mb-0">生徒の視点</p>
             <button className="btn btn-primary w-full" onClick={onSync}>注目！ 視点をそろえる</button>
             <button className={`btn w-full ${camLocked ? 'btn-on' : ''}`} onClick={onCamLock} aria-pressed={camLocked}>
-              {camLocked ? '視点ロック中（タップで解除）' : 'そろえて視点をロック'}
+              {camLocked ? '画面ロック中（タップで解除）' : '画面をロックする'}
             </button>
+            <p className="text-xs text-slate-500">先生の視点にそろえて、生徒の操作を止めます。</p>
+            <button className={`btn w-full ${camFollow ? 'btn-on' : ''}`} onClick={onCamFollow} aria-pressed={camFollow}>
+              {camFollow ? '視点共有中（タップで解除）' : '視点を共有する'}
+            </button>
+            <p className="text-xs text-slate-500">生徒は操作できず、先生のカメラの動きを真似します。</p>
           </div>
 
           {clips.length > 0 && (

@@ -1,7 +1,7 @@
 export type DisplayMode = 'anonymous' | 'group';
 export type Vec3 = [number, number, number];
 
-export type CameraSync = { position: Vec3; target: Vec3; updated_at: string; locked?: boolean };
+export type CameraSync = { position: Vec3; target: Vec3; updated_at: string; locked?: boolean; follow?: boolean };
 
 // 全アニメーションを同時再生。loop が false なら1回だけ再生して最後で止まる
 export type AnimState = { playing: boolean; time: number; speed: number; loop?: boolean; rev: number };
@@ -17,6 +17,7 @@ export type Room = {
   join_code: string | null;
   join_password: string | null;
   anim_state: AnimState | null;
+  shared_filter: string | null; // 先生が全員に適用している班フィルタ（null=適用なし、'all'=全員表示を適用）
   created_at: string;
 };
 

@@ -2,14 +2,14 @@
 import type { Pin } from '@/lib/types';
 import { formatDateTime } from '@/lib/util';
 
-export default function PinDetailPanel({ pin, number, showAuthor, canEdit, canDelete, onEdit, onDelete, onClose }: {
-  pin: Pin; number: number; showAuthor: boolean; canEdit: boolean; canDelete: boolean;
+export default function PinDetailPanel({ pin, number, showAuthor, offsetTop, canEdit, canDelete, onEdit, onDelete, onClose }: {
+  pin: Pin; number: number; showAuthor: boolean; offsetTop?: boolean; canEdit: boolean; canDelete: boolean;
   onEdit: () => void; onDelete: () => void; onClose: () => void;
 }) {
   return (
     <aside
       aria-label="ピンの詳細"
-      className="fixed inset-x-0 bottom-0 z-30 max-h-[55dvh] overflow-y-auto rounded-t-2xl bg-white p-5 shadow-2xl md:inset-x-auto md:bottom-auto md:right-0 md:top-0 md:h-full md:max-h-none md:w-96 md:rounded-none"
+      className={`fixed inset-x-0 bottom-0 z-30 max-h-[55dvh] overflow-y-auto rounded-t-2xl bg-white p-5 shadow-2xl md:inset-x-auto md:bottom-auto md:right-0 md:top-0 md:h-full md:max-h-none md:w-96 md:rounded-none ${offsetTop ? 'md:pt-24' : ''}`}
     >
       <div className="flex items-start gap-3">
         <span className="grid size-8 shrink-0 place-items-center rounded-full text-sm font-bold text-white" style={{ background: showAuthor ? pin.group_color : '#475569' }}>

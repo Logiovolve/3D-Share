@@ -4,7 +4,8 @@ import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRoomRealtime } from '@/hooks/useRoomRealtime';
-import { ANON_COLOR } from '@/lib/groups';
+import { ANON_COLOR, GROUPS } from '@/lib/groups';
+import { useCameraChannel, type LiveCamera } from '@/hooks/useCameraChannel';
 import { isTeacherAuthed, loadIdentity, setTeacherAuthed } from '@/lib/identity';
 import { prepareImage, uploadFile } from '@/lib/upload';
 import { errMsg, uuid } from '@/lib/util';
@@ -42,6 +43,11 @@ export default function RoomClient({ roomId }: { roomId: string }) {
   const [clips, setClips] = useState<ClipInfo[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const apiRef = useRef<ViewerApi | null>(null);
+  const roomRef = useRef<Room | null>(null);
+  roomRef.current = room;
+  const liveCamRef = useRef<LiveCamera | null>(null);
+  const camTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sendCam = useCameraChannel(roomId, (c) => { liveCamRef.current = c; });
 
   // 入室状態の復元（localStorage はクライアントのみ）
   useEffect(() => {
@@ -66,7 +72,11 @@ export default function RoomClient({ roomId }: { roomId: string }) {
     return m;
   }, [pins]);
 
-  const visiblePins = useMemo(() => (groupFilter === 'all' ? pins : pins.filter((p) => p.group_name === groupFilter)), [pins, groupFilter]);
+  // 匿名モード中は、生徒の班フィルタを無効にする（フィルタで班が推測できてしまうため）
+  // 先生が「全員に適用」している班があれば、生徒はそれに従う
+  const shared = room?.shared_filter ?? null;
+  const effFilter = isTeacher ? groupFilter : shared !== null ? shared : room?.display_mode === 'anonymous' ? 'all' : groupFilter;
+  const visiblePins = useMemo(() => (effFilter === 'all' ? pins : pins.filter((p) => p.group_name === effFilter)), [pins, effFilter]);
 
   const anonymous = room?.display_mode === 'anonymous';
   const viewerPins: ViewerPin[] = useMemo(
@@ -100,31 +110,62 @@ export default function RoomClient({ roomId }: { roomId: string }) {
   const selectedPin = visiblePins.find((p) => p.id === selectedId) ?? null;
 
   /* ---------- 操作 ---------- */
-  const updateRoom = async (patch: Partial<Pick<Room, 'display_mode' | 'is_locked' | 'camera_sync' | 'anim_state'>>) => {
+  const updateRoom = async (patch: Partial<Pick<Room, 'display_mode' | 'is_locked' | 'camera_sync' | 'anim_state' | 'shared_filter'>>) => {
     setRoom((r) => (r ? { ...r, ...patch } : r));
     const { error } = await supabase.from('rooms').update(patch).eq('id', roomId);
     if (error) showToast(`設定を保存できませんでした：${errMsg(error)}`);
   };
 
   // 注目！：全員の視点を先生の視点にそろえる（ロック状態は維持）
-  const syncCamera = (opts?: { lock?: boolean }) => {
+  const syncCamera = (opts?: { lock?: boolean; follow?: boolean }) => {
     const cam = apiRef.current?.getCamera();
     if (!cam) return showToast('カメラの準備ができていません。');
     const locked = opts?.lock ?? room.camera_sync?.locked ?? false;
-    void updateRoom({ camera_sync: { ...cam, locked, updated_at: new Date().toISOString() } });
-    showToast(locked ? '全員の視点をそろえて、ロックしました。' : '全員の視点をそろえました。');
+    const follow = opts?.follow ?? room.camera_sync?.follow ?? false;
+    void updateRoom({ camera_sync: { ...cam, locked, follow, updated_at: new Date().toISOString() } });
+    showToast(opts?.lock ? '画面をロックしました。' : opts?.follow ? '視点共有を始めました。' : '全員の視点をそろえました。');
   };
 
-  // 視点ロック：ONで先生の視点にそろえて固定／OFFで固定だけ解除（画面は動かない）
+  // 連動中：カメラの動きを配信し、動きが止まったらDBにも最後の視点を保存（途中入室・再読込用）
+  const streamCamera = (c: LiveCamera) => {
+    sendCam(c);
+    if (camTimer.current) clearTimeout(camTimer.current);
+    camTimer.current = setTimeout(() => {
+      const cs = roomRef.current?.camera_sync;
+      if (!cs?.follow) return;
+      void updateRoom({ camera_sync: { ...c, locked: !!cs.locked, follow: true, updated_at: new Date().toISOString() } });
+    }, 800);
+  };
+
+  // 視点連動：ONで先生の視点にそろえて固定／OFFで固定だけ解除（画面は動かない）
   const toggleCamLock = () => {
     const cur = room.camera_sync;
     if (cur?.locked) {
       void updateRoom({ camera_sync: { ...cur, locked: false } });
-      showToast('視点のロックを解除しました。');
+      showToast('画面のロックを解除しました。');
     } else {
-      syncCamera({ lock: true });
+      syncCamera({ lock: true }); // 先生の視点にそろえて、生徒の操作を止める
     }
   };
+
+  // 視点共有：ONで先生のカメラの動きを生徒が真似する／OFFで解除
+  const toggleFollow = () => {
+    const cur = room.camera_sync;
+    if (cur?.follow) {
+      if (camTimer.current) clearTimeout(camTimer.current);
+      void updateRoom({ camera_sync: { ...cur, follow: false } });
+      showToast('視点共有を解除しました。');
+    } else {
+      syncCamera({ follow: true });
+    }
+  };
+
+  // 班フィルタ：先生の画面は常に切り替わる。「全員に適用」中は生徒の画面にも反映
+  const changeFilter = (g: string) => {
+    setGroupFilter(g);
+    if (room.shared_filter != null) void updateRoom({ shared_filter: g });
+  };
+  const toggleSharedFilter = () => void updateRoom({ shared_filter: room.shared_filter != null ? null : groupFilter });
 
   // アニメーション操作：現在位置を引き継いで、全員へ配信（rev が変わると各端末でやり直す）
   const sendAnim = (patch: Partial<AnimState>) => {
@@ -254,6 +295,9 @@ export default function RoomClient({ roomId }: { roomId: string }) {
           apiRef={apiRef}
           animState={room.anim_state ?? null}
           onClips={setClips}
+          liveCamRef={liveCamRef}
+          streaming={isTeacher && !!room.camera_sync?.follow}
+          onCameraStream={streamCamera}
         />
       </div>
 
@@ -272,8 +316,32 @@ export default function RoomClient({ roomId }: { roomId: string }) {
               班・名前を変更
             </button>
           )}
+          {!isTeacher && (!anonymous || shared !== null) && (
+            <div className="mt-2">
+              <label className="sr-only" htmlFor="sf">表示する班</label>
+              <select
+                id="sf"
+                className="input !py-1 !text-sm"
+                value={shared !== null ? shared : groupFilter}
+                disabled={shared !== null}
+                onChange={(e) => setGroupFilter(e.target.value)}
+              >
+                <option value="all">全員の気づきを表示</option>
+                {GROUPS.map((g) => <option key={g.name} value={g.name}>{g.name}だけ表示</option>)}
+              </select>
+              {shared !== null && <p className="mt-1 text-xs text-slate-500">先生が表示を指定しています</p>}
+            </div>
+          )}
         </div>
       </header>
+
+      {isTeacher && room.join_code && (
+        <div className="absolute right-3 top-3 z-40 rounded-xl bg-white/95 px-3 py-2 text-right shadow ring-1 ring-slate-200">
+          <p className="text-[11px] text-slate-500">生徒の入室用</p>
+          <p className="text-sm">ルームID <span className="font-mono text-lg font-bold tracking-widest">{room.join_code}</span></p>
+          <p className="text-sm">パスワード <span className="font-mono text-lg font-bold tracking-widest">{room.join_password}</span></p>
+        </div>
+      )}
 
       {locked && (
         <div role="status" className="absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-full bg-amber-400 px-4 py-2 text-sm font-bold text-slate-900 shadow">
@@ -286,9 +354,9 @@ export default function RoomClient({ roomId }: { roomId: string }) {
         </div>
       )}
 
-      {!isTeacher && room.camera_sync?.locked && (
+      {!isTeacher && (room.camera_sync?.follow || room.camera_sync?.locked) && (
         <div role="status" className="absolute left-1/2 top-14 z-20 -translate-x-1/2 rounded-full bg-sky-500 px-4 py-2 text-sm font-bold text-white shadow">
-          先生の画面を見てください（視点が固定されています）
+          {room.camera_sync?.follow ? '先生の視点に合わせて動きます（操作はできません）' : '先生が画面をロックしています（操作はできません）'}
         </div>
       )}
 
@@ -299,12 +367,16 @@ export default function RoomClient({ roomId }: { roomId: string }) {
           groupFilter={groupFilter}
           clips={clips}
           onAnim={sendAnim}
-          onFilter={setGroupFilter}
+          onFilter={changeFilter}
+          filterShared={room.shared_filter != null}
+          onToggleFilterShared={toggleSharedFilter}
           onMode={(m) => void updateRoom({ display_mode: m })}
           onLock={(v) => void updateRoom({ is_locked: v })}
           onSync={() => syncCamera()}
           camLocked={!!room.camera_sync?.locked}
+          camFollow={!!room.camera_sync?.follow}
           onCamLock={toggleCamLock}
+          onCamFollow={toggleFollow}
           onOpenList={() => setListOpen(true)}
         />
       )}
@@ -324,6 +396,7 @@ export default function RoomClient({ roomId }: { roomId: string }) {
           pin={selectedPin}
           number={numbers.get(selectedPin.id) ?? 0}
           showAuthor={!anonymous}
+          offsetTop={isTeacher}
           canEdit={!isTeacher && !locked && selectedPin.author_id === identity?.author_id}
           canDelete={isTeacher || selectedPin.author_id === identity?.author_id}
           onEdit={() => { setFormError(null); setForm({ mode: 'edit', pin: selectedPin }); }}

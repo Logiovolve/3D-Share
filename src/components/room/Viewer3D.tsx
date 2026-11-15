@@ -135,9 +135,11 @@ function PinMarker({ pin, radius, selected, onSelect }: { pin: ViewerPin; radius
 }
 
 /* ---------- カメラ（初期位置・視点シンクロ） ---------- */
-function CameraRig({ bounds, cameraSync, followSync, apiRef, animTimeRef }: {
+function CameraRig({ bounds, cameraSync, followSync, apiRef, animTimeRef, liveRef, streaming, onStream }: {
   bounds: Bounds | null; cameraSync: CameraSync | null; followSync: boolean;
   apiRef: MutableRefObject<ViewerApi | null>; animTimeRef: MutableRefObject<() => number>;
+  liveRef: MutableRefObject<{ position: Vec3; target: Vec3 } | null>;
+  streaming: boolean; onStream?: (c: { position: Vec3; target: Vec3 }) => void;
 }) {
   const camera = useThree((s) => s.camera);
   const controls = useThree((s) => s.controls) as unknown as Orbit | null;
@@ -165,8 +167,8 @@ function CameraRig({ bounds, cameraSync, followSync, apiRef, animTimeRef }: {
     cam.far = bounds.size * 100;
     cam.updateProjectionMatrix();
     const { cameraSync: cs, followSync: fs } = syncRef.current;
-    if (cs?.locked && fs) {
-      // 視点ロック中に入室した場合は、最初から先生の視点にする
+    if ((cs?.locked || cs?.follow) && fs) {
+      // ロック／視点共有中に入室した場合は、最初から先生の視点にする
       camera.position.set(...cs.position);
       controls.target.set(...cs.target);
     } else {
@@ -186,15 +188,51 @@ function CameraRig({ bounds, cameraSync, followSync, apiRef, animTimeRef }: {
     anim.current = { pos: new THREE.Vector3(...cameraSync.position), target: new THREE.Vector3(...cameraSync.target) };
   }, [cameraSync, followSync]);
 
+  const streamRef = useRef(onStream);
+  streamRef.current = onStream;
+  const live = useRef({ p: new THREE.Vector3(), t: new THREE.Vector3() });
+  const last = useRef({ time: 0, p: new THREE.Vector3(), t: new THREE.Vector3() });
+
   useFrame((_, dt) => {
+    if (!controls) return;
     const a = anim.current;
-    if (!a || !controls) return;
-    const k = 1 - Math.exp(-dt * 5);
-    camera.position.lerp(a.pos, k);
-    controls.target.lerp(a.target, k);
-    controls.update();
-    const eps = (bounds?.size ?? 1) * 0.002;
-    if (camera.position.distanceTo(a.pos) < eps && controls.target.distanceTo(a.target) < eps) anim.current = null;
+    const following = !!cameraSync?.follow; // 視点共有（先生の動きを真似る）
+    if (!following) liveRef.current = null;
+
+    if (a) {
+      // 「注目！」：滑らかに先生の視点へ移動
+      const k = 1 - Math.exp(-dt * 5);
+      camera.position.lerp(a.pos, k);
+      controls.target.lerp(a.target, k);
+      controls.update();
+      const eps = (bounds?.size ?? 1) * 0.002;
+      if (camera.position.distanceTo(a.pos) < eps && controls.target.distanceTo(a.target) < eps) anim.current = null;
+    } else if (followSync && following && liveRef.current) {
+      // 視点連動中：先生のカメラの動きをそのまま追いかける
+      const k = 1 - Math.exp(-dt * 12);
+      live.current.p.set(...liveRef.current.position);
+      live.current.t.set(...liveRef.current.target);
+      camera.position.lerp(live.current.p, k);
+      controls.target.lerp(live.current.t, k);
+      controls.update();
+    }
+
+    if (streaming) {
+      // 先生側：カメラが動いたら約12回/秒で配信
+      const now = performance.now();
+      if (now - last.current.time > 80) {
+        const eps = (bounds?.size ?? 1) * 0.0005;
+        if (camera.position.distanceTo(last.current.p) > eps || controls.target.distanceTo(last.current.t) > eps) {
+          last.current.time = now;
+          last.current.p.copy(camera.position);
+          last.current.t.copy(controls.target);
+          streamRef.current?.({
+            position: [camera.position.x, camera.position.y, camera.position.z],
+            target: [controls.target.x, controls.target.y, controls.target.z],
+          });
+        }
+      }
+    }
   });
 
   return null;
@@ -208,11 +246,13 @@ class ModelErrorBoundary extends Component<{ children: ReactNode; onError: () =>
 }
 
 /* ---------- 本体 ---------- */
-export default function Viewer3D({ modelUrl, pins, selectedId, placeMode, onPlace, onSelect, cameraSync, followSync, apiRef, animState, onClips }: {
+export default function Viewer3D({ modelUrl, pins, selectedId, placeMode, onPlace, onSelect, cameraSync, followSync, apiRef, animState, onClips, liveCamRef, streaming, onCameraStream }: {
   modelUrl: string; pins: ViewerPin[]; selectedId: string | null; placeMode: boolean;
   onPlace: (p: Vec3, n: Vec3) => void; onSelect: (id: string | null) => void;
   cameraSync: CameraSync | null; followSync: boolean; apiRef: MutableRefObject<ViewerApi | null>;
   animState: AnimState | null; onClips: (c: ClipInfo[]) => void;
+  liveCamRef: MutableRefObject<{ position: Vec3; target: Vec3 } | null>;
+  streaming: boolean; onCameraStream: (c: { position: Vec3; target: Vec3 }) => void;
 }) {
   const [bounds, setBounds] = useState<Bounds | null>(null);
   const [failed, setFailed] = useState(false);
@@ -242,8 +282,8 @@ export default function Viewer3D({ modelUrl, pins, selectedId, placeMode, onPlac
           <PinMarker key={p.id} pin={p} radius={pinRadius} selected={p.id === selectedId} onSelect={onSelect} />
         ))}
 
-        <OrbitControls makeDefault enabled={!(followSync && !!cameraSync?.locked)} enableDamping dampingFactor={0.12} screenSpacePanning />
-        <CameraRig bounds={bounds} cameraSync={cameraSync} followSync={followSync} apiRef={apiRef} animTimeRef={animTimeRef} />
+        <OrbitControls makeDefault enabled={!(followSync && (!!cameraSync?.locked || !!cameraSync?.follow))} enableDamping dampingFactor={0.12} screenSpacePanning />
+        <CameraRig bounds={bounds} cameraSync={cameraSync} followSync={followSync} apiRef={apiRef} animTimeRef={animTimeRef} liveRef={liveCamRef} streaming={streaming} onStream={onCameraStream} />
       </Canvas>
       {!bounds && !failed && (
         <p className="pointer-events-none absolute inset-0 grid place-items-center text-sm text-slate-200">3Dモデルを読み込み中…</p>
