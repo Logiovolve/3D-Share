@@ -75,6 +75,7 @@ function Model({ url, placeMode, onPlace, onBounds, onClips, anim, animTimeRef }
     e.stopPropagation();
     if (!e.face) return;
     const n = e.face.normal.clone().transformDirection(e.object.matrixWorld).normalize();
+    if (n.dot(e.ray.direction) > 0) n.negate(); // 板の裏側をタップしたときも、手前向きに
     onPlace([e.point.x, e.point.y, e.point.z], [n.x, n.y, n.z]);
   };
 

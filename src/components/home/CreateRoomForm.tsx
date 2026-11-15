@@ -1,15 +1,52 @@
 'use client';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { supabase } from '@/lib/supabase';
 import { uploadFile } from '@/lib/upload';
 import { setTeacherAuthed } from '@/lib/identity';
 import { errMsg, uuid } from '@/lib/util';
+import { imageToGlb, imageToUsdz } from '@/lib/imageModel';
 
 export default function CreateRoomForm() {
   const [title, setTitle] = useState('');
   const [passcode, setPasscode] = useState('');
   const [file, setFile] = useState<File | null>(null);
+  const [mode, setMode] = useState<'glb' | 'image'>('glb');
+  const [imgFile, setImgFile] = useState<File | null>(null);
+  const [imgUrl, setImgUrl] = useState<string | null>(null);
+  const [widthCm, setWidthCm] = useState(30);
+  const imgRef = useRef<HTMLInputElement>(null);
+  const hasModel = mode === 'glb' ? !!file : !!imgFile;
+
+  useEffect(() => {
+    if (!imgFile) return setImgUrl(null);
+    const u = URL.createObjectURL(imgFile);
+    setImgUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [imgFile]);
+
+  const pickImage = (f?: File | null) => {
+    if (!f) return;
+    if (!f.type.startsWith('image/')) return setError('画像ファイルを選んでください。');
+    setError(null);
+    setImgFile(f);
+  };
+
+  const downloadUsdz = async () => {
+    if (!imgFile) return;
+    setBusy(true);
+    try {
+      const blob = await imageToUsdz(imgFile, widthCm);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'card_model.usdz';
+      a.click();
+    } catch (e) {
+      setError(`USDZを作成できませんでした：${errMsg(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
   const [drag, setDrag] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -28,11 +65,12 @@ export default function CreateRoomForm() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!file || !title.trim() || !passcode.trim()) return;
+    if (!hasModel || !title.trim() || !passcode.trim()) return;
     setBusy(true);
     setError(null);
     try {
-      const glb_url = await uploadFile(`models/${uuid()}.glb`, file, 'model/gltf-binary');
+      const blob = mode === 'image' ? await imageToGlb(imgFile!, widthCm) : file!;
+      const glb_url = await uploadFile(`models/${uuid()}.glb`, blob, 'model/gltf-binary');
       // 6桁のルームIDを自動発行（重複したら作り直す）
       let created: { id: string; code: string } | null = null;
       for (let i = 0; i < 5 && !created; i++) {
@@ -106,17 +144,46 @@ export default function CreateRoomForm() {
         <input id="t" className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例：地層の観察の振り返り" required />
       </div>
       <div>
-        <p className="label">3Dモデル（.glb）</p>
-        <div
-          onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
-          onDragLeave={() => setDrag(false)}
-          onDrop={(e) => { e.preventDefault(); setDrag(false); pick(e.dataTransfer.files[0]); }}
-          onClick={() => inputRef.current?.click()}
-          className={`cursor-pointer rounded-xl border-2 border-dashed p-6 text-center text-sm ${drag ? 'border-blue-500 bg-blue-50' : 'border-slate-300 bg-slate-50'}`}
-        >
-          {file ? <span className="font-bold">{file.name}（{(file.size / 1024 / 1024).toFixed(1)} MB）</span> : 'ここに .glb をドラッグ＆ドロップ、またはクリックして選ぶ'}
-          <input ref={inputRef} type="file" accept=".glb,model/gltf-binary" hidden onChange={(e) => pick(e.target.files?.[0])} />
+        <p className="label">観察する教材</p>
+        <div className="mb-3 grid grid-cols-2 gap-2" role="tablist">
+          <button type="button" role="tab" aria-selected={mode === 'glb'} className={`btn ${mode === 'glb' ? 'btn-on' : ''}`} onClick={() => setMode('glb')}>3Dモデル（.glb）</button>
+          <button type="button" role="tab" aria-selected={mode === 'image'} className={`btn ${mode === 'image' ? 'btn-on' : ''}`} onClick={() => setMode('image')}>写真・画像から作る</button>
         </div>
+
+        {mode === 'glb' ? (
+          <div
+            onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+            onDragLeave={() => setDrag(false)}
+            onDrop={(e) => { e.preventDefault(); setDrag(false); pick(e.dataTransfer.files[0]); }}
+            onClick={() => inputRef.current?.click()}
+            className={`cursor-pointer rounded-xl border-2 border-dashed p-6 text-center text-sm ${drag ? 'border-blue-500 bg-blue-50' : 'border-slate-300 bg-slate-50'}`}
+          >
+            {file ? <span className="font-bold">{file.name}（{(file.size / 1024 / 1024).toFixed(1)} MB）</span> : 'ここに .glb をドラッグ＆ドロップ、またはクリックして選ぶ'}
+            <input ref={inputRef} type="file" accept=".glb,model/gltf-binary" hidden onChange={(e) => pick(e.target.files?.[0])} />
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div
+              onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+              onDragLeave={() => setDrag(false)}
+              onDrop={(e) => { e.preventDefault(); setDrag(false); pickImage(e.dataTransfer.files[0]); }}
+              onClick={() => imgRef.current?.click()}
+              className={`cursor-pointer rounded-xl border-2 border-dashed p-4 text-center text-sm ${drag ? 'border-blue-500 bg-blue-50' : 'border-slate-300 bg-slate-50'}`}
+            >
+              {imgUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={imgUrl} alt="選んだ画像" className="mx-auto max-h-40 rounded-lg" />
+              ) : '写真・地図・資料の画像をドラッグ＆ドロップ、またはクリックして選ぶ'}
+              <input ref={imgRef} type="file" accept="image/*" hidden onChange={(e) => pickImage(e.target.files?.[0])} />
+            </div>
+            <div>
+              <div className="flex justify-between text-sm"><label htmlFor="w" className="font-bold">3Dでの幅（ARで置いたときの大きさ）</label><span>{widthCm} cm</span></div>
+              <input id="w" type="range" min={10} max={100} step={5} value={widthCm} onChange={(e) => setWidthCm(Number(e.target.value))} className="w-full" />
+            </div>
+            <button type="button" className="btn w-full" disabled={!imgFile || busy} onClick={downloadUsdz}>iPadのAR用に USDZ でも保存</button>
+            <p className="text-xs text-slate-500">画像は板状の3Dモデルになり、ルームではその上にピンを立てて観察できます。</p>
+          </div>
+        )}
       </div>
       <div>
         <label className="label" htmlFor="jp">生徒用パスワード（数字4桁）</label>
@@ -127,7 +194,7 @@ export default function CreateRoomForm() {
         <input id="p" className="input" value={passcode} onChange={(e) => setPasscode(e.target.value)} placeholder="先生だけが知っている言葉" required />
       </div>
       {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
-      <button className="btn btn-primary w-full" disabled={busy || !file || !title.trim() || !passcode.trim() || pw.length !== 4}>
+      <button className="btn btn-primary w-full" disabled={busy || !hasModel || !title.trim() || !passcode.trim() || pw.length !== 4}>
         {busy ? 'アップロード中…' : 'ルームをつくる'}
       </button>
     </form>
