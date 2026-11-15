@@ -38,6 +38,6 @@ export async function imageToGlb(file: File, widthCm: number): Promise<Blob> {
 export async function imageToUsdz(file: File, widthCm: number): Promise<Blob> {
   const { USDZExporter } = await import('three/examples/jsm/exporters/USDZExporter.js');
   const mesh = buildPlane(await loadResized(file), widthCm, false);
-  const data = await new USDZExporter().parse(mesh);
-  return new Blob([data as BlobPart], { type: 'model/vnd.usdz+zip' });
+  const data = await new USDZExporter().parseAsync(mesh);
+  return new Blob([data as unknown as BlobPart], { type: 'model/vnd.usdz+zip' });
 }
