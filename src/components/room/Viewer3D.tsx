@@ -14,12 +14,7 @@ export type ViewerApi = {
   goOverview: () => void; // 全体視点（最初の見え方）へ滑らかに戻る
 };
 type Bounds = { center: THREE.Vector3; size: number };
-type Orbit = {
-  target: THREE.Vector3; update: () => void;
-  rotateSpeed: number; enableZoom: boolean; enablePan: boolean;
-  addEventListener: (type: string, fn: () => void) => void;
-  removeEventListener: (type: string, fn: () => void) => void;
-};
+type Orbit = { target: THREE.Vector3; update: () => void; enabled: boolean };
 type PartObjMap = MutableRefObject<Map<string, THREE.Object3D>>;
 
 /* ---------- パーツの「中心」のワールド座標（アニメーションに追従） ---------- */
@@ -218,16 +213,38 @@ function PinMarker({ pin, radius, selected, onSelect }: { pin: ViewerPin; radius
 }
 
 /* ---------- カメラ（初期位置・視点シンクロ・対象物追従） ---------- */
+// 追従中のカメラは「対象物の子」のように固定される：
+//   位置 = 対象物の中心 + カメラ向きの後ろ側へ dist
+//   向き = 対象物の回転 × qBase × ユーザーが見回した分(yaw/pitch)
+// → 対象物が動く・回る（アニメーション）と、カメラも位置も向きも一緒に動く。
 type FollowRt = {
   mode: FollowMode; obj: THREE.Object3D; phase: 'enter' | 'track';
-  offset: THREE.Vector3; prev: THREE.Vector3; p0: THREE.Vector3; t0: number; vdirDone: boolean;
+  qBase: THREE.Quaternion; // 対象物の座標系から見たカメラの基本の向き
+  yaw: number; pitch: number; dist: number;
+  p0: THREE.Vector3; t0: number; vdirDone: boolean;
 };
 
-function applyControls(c: Orbit, mode: FollowMode | null) {
-  if (mode === 'center') { c.rotateSpeed = -0.6; c.enableZoom = false; c.enablePan = false; } // 見回す（ゆっくり・向きは「世界をつかんで回す」）
-  else if (mode === 'behind') { c.rotateSpeed = 0.8; c.enableZoom = true; c.enablePan = false; }
-  else { c.rotateSpeed = 1; c.enableZoom = true; c.enablePan = true; }
+const UP = new THREE.Vector3(0, 1, 0);
+const _m = new THREE.Matrix4();
+const _q1 = new THREE.Quaternion();
+const _q2 = new THREE.Quaternion();
+const _e = new THREE.Euler();
+
+function lookQuat(eye: THREE.Vector3, target: THREE.Vector3, out: THREE.Quaternion) {
+  _m.lookAt(eye, target, UP);
+  return out.setFromRotationMatrix(_m);
 }
+
+/** 追従カメラのあるべき位置・向き */
+function rigPose(f: FollowRt, center: THREE.Vector3, outPos: THREE.Vector3, outQ: THREE.Quaternion) {
+  f.obj.getWorldQuaternion(_q1);
+  _e.set(f.pitch, f.yaw, 0, 'YXZ');
+  _q2.setFromEuler(_e);
+  outQ.copy(_q1).multiply(f.qBase).multiply(_q2);
+  outPos.set(0, 0, f.dist).applyQuaternion(outQ).add(center);
+}
+
+const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 
 function CameraRig({ bounds, cameraSync, followSync, apiRef, animTimeRef, liveRef, streaming, onStream, follow, objMapRef }: {
   bounds: Bounds | null; cameraSync: CameraSync | null; followSync: boolean;
@@ -237,6 +254,7 @@ function CameraRig({ bounds, cameraSync, followSync, apiRef, animTimeRef, liveRe
   follow: FollowState | null; objMapRef: PartObjMap;
 }) {
   const camera = useThree((s) => s.camera);
+  const gl = useThree((s) => s.gl);
   const controls = useThree((s) => s.controls) as unknown as Orbit | null;
   const anim = useRef<{ pos: THREE.Vector3; target: THREE.Vector3 } | null>(null);
   const lastSync = useRef<string | null | undefined>(undefined);
@@ -286,43 +304,107 @@ function CameraRig({ bounds, cameraSync, followSync, apiRef, animTimeRef, liveRe
     controls.update();
   }, [bounds, controls, camera]);
 
-  // 対象物追従の開始／切り替え／終了
+  // 追従の開始／切り替え／終了
   useEffect(() => {
     if (!controls) return;
+
+    // 前の追従の後始末：向きは保ったまま、通常のカメラ操作（OrbitControls）へ引き継ぐ
+    const prev = followRt.current;
+    followRt.current = null;
+    if (prev) {
+      const fwd = camera.getWorldDirection(new THREE.Vector3());
+      controls.target.copy(camera.position).addScaledVector(fwd, Math.max(prev.dist, size * 0.1));
+      controls.update();
+    }
+    const cs = syncRef.current;
+    controls.enabled = !(cs.followSync && (!!cs.cameraSync?.locked || !!cs.cameraSync?.follow));
+
     const obj = fid ? objMapRef.current.get(fid) : undefined;
-    if (!fid || !fmode || !obj) {
-      followRt.current = null;
-      applyControls(controls, null);
-      return;
-    }
+    if (!fid || !fmode || !obj) return;
+
     const P = partCenter(obj, new THREE.Vector3());
-    const offset = new THREE.Vector3();
+    const partQ = obj.getWorldQuaternion(new THREE.Quaternion());
+    let camQ0: THREE.Quaternion;
+    let dist: number;
     if (fmode === 'center') {
-      // 一人称：いま見ている向きのまま、パーツの中心に入る
-      offset.copy(camera.getWorldDirection(new THREE.Vector3())).multiplyScalar(-size * 0.003);
+      camQ0 = camera.quaternion.clone(); // いま見ている向きのまま中へ
+      dist = size * 0.003;
     } else {
-      // 後方視点：いまの方向を保ちつつ近づく（動き出したら進行方向の真後ろへ）
-      offset.copy(camera.position).sub(P);
-      if (offset.lengthSq() < 1e-12) offset.set(0, 0.35, 1);
-      offset.normalize().multiplyScalar(size * 0.08);
+      dist = size * 0.08;
+      const eye = camera.position.clone().sub(P);
+      if (eye.lengthSq() < 1e-12) eye.set(0, 0.35, 1);
+      eye.normalize().multiplyScalar(dist).add(P);
+      camQ0 = lookQuat(eye, P, new THREE.Quaternion());
     }
-    followRt.current = { mode: fmode, obj, phase: 'enter', offset, prev: P.clone(), p0: P.clone(), t0: performance.now(), vdirDone: fmode === 'center' };
-    applyControls(controls, fmode);
+    followRt.current = {
+      mode: fmode, obj, phase: 'enter',
+      qBase: partQ.clone().invert().multiply(camQ0),
+      yaw: 0, pitch: 0, dist, p0: P.clone(), t0: performance.now(), vdirDone: fmode === 'center',
+    };
+    controls.enabled = false; // 追従中は専用の見回し操作（下）を使う
   }, [fid, fmode, controls, camera, objMapRef, size, bounds]);
 
-  // ユーザーが自分で見回し始めたら、自動の位置合わせは止める
+  // 追従中の見回し：1本指/ドラッグ=見回し、後方視点はピンチ/ホイール=距離
   useEffect(() => {
-    if (!controls) return;
-    const onStart = () => {
+    const el = gl.domElement;
+    const ptrs = new Map<number, { x: number; y: number }>();
+    let pinch0 = 0;
+    let dist0 = 0;
+
+    const down = (e: PointerEvent) => {
       const f = followRt.current;
       if (!f) return;
-      f.vdirDone = true;
+      ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      f.vdirDone = true; // 自分で動かし始めたら、自動の位置合わせはしない
       f.phase = 'track';
-      partCenter(f.obj, f.prev);
+      if (ptrs.size === 2) {
+        const [a, b] = [...ptrs.values()];
+        pinch0 = Math.hypot(a.x - b.x, a.y - b.y);
+        dist0 = f.dist;
+      }
     };
-    controls.addEventListener('start', onStart);
-    return () => controls.removeEventListener('start', onStart);
-  }, [controls]);
+    const move = (e: PointerEvent) => {
+      const f = followRt.current;
+      const p = ptrs.get(e.pointerId);
+      if (!f || !p) return;
+      const dx = e.clientX - p.x;
+      const dy = e.clientY - p.y;
+      p.x = e.clientX;
+      p.y = e.clientY;
+      if (ptrs.size === 1) {
+        // 一人称：画面をつかんで回す向き／後方視点：対象物をつかんで回す向き（ゆっくり・酔いにくく）
+        const k = ((2 * Math.PI) / (el.clientHeight || 800)) * (f.mode === 'center' ? 0.6 : 0.8);
+        const sgn = f.mode === 'center' ? 1 : -1;
+        f.yaw += sgn * dx * k;
+        f.pitch = clamp(f.pitch + sgn * dy * k, -1.45, 1.45);
+      } else if (ptrs.size === 2 && f.mode === 'behind') {
+        const [a, b] = [...ptrs.values()];
+        const d = Math.hypot(a.x - b.x, a.y - b.y);
+        if (pinch0 > 0 && d > 0) f.dist = clamp((dist0 * pinch0) / d, size * 0.01, size * 0.5);
+      }
+    };
+    const up = (e: PointerEvent) => { ptrs.delete(e.pointerId); };
+    const wheel = (e: WheelEvent) => {
+      const f = followRt.current;
+      if (!f || f.mode !== 'behind') return;
+      e.preventDefault();
+      f.vdirDone = true;
+      f.dist = clamp(f.dist * Math.exp(e.deltaY * 0.001), size * 0.01, size * 0.5);
+    };
+
+    el.addEventListener('pointerdown', down);
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+    el.addEventListener('wheel', wheel, { passive: false });
+    return () => {
+      el.removeEventListener('pointerdown', down);
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+      el.removeEventListener('wheel', wheel);
+    };
+  }, [gl, size]);
 
   // 「注目！」：updated_at が変わったら全生徒をその視点へ（入室時の既存値は無視）
   useEffect(() => {
@@ -340,7 +422,7 @@ function CameraRig({ bounds, cameraSync, followSync, apiRef, animTimeRef, liveRe
   streamRef.current = onStream;
   const live = useRef({ p: new THREE.Vector3(), t: new THREE.Vector3() });
   const last = useRef({ time: 0, p: new THREE.Vector3(), t: new THREE.Vector3() });
-  const v = useRef({ p: new THREE.Vector3(), g: new THREE.Vector3(), d: new THREE.Vector3() });
+  const v = useRef({ c: new THREE.Vector3(), g: new THREE.Vector3(), d: new THREE.Vector3(), q: new THREE.Quaternion(), w: new THREE.Vector3() });
 
   useFrame((_, dt) => {
     if (!controls) return;
@@ -351,37 +433,40 @@ function CameraRig({ bounds, cameraSync, followSync, apiRef, animTimeRef, liveRe
     const f = busy ? null : followRt.current;
 
     if (f) {
-      const { p, g, d } = v.current;
-      partCenter(f.obj, p);
+      const { c, g, d, q, w } = v.current;
+      partCenter(f.obj, c);
 
       // 後方視点：最初の動きから進行方向を求め、真後ろ（少し上）へ回り込む
       if (f.mode === 'behind' && !f.vdirDone) {
-        d.copy(p).sub(f.p0);
+        d.copy(c).sub(f.p0);
         const moved = d.length();
         if (moved > size * 0.004 || (performance.now() - f.t0) / 1000 > 0.8) {
           f.vdirDone = true;
           if (moved > size * 0.001) {
-            f.offset.copy(d).normalize().negate().addScaledVector(camera.up, 0.35).normalize().multiplyScalar(size * 0.08);
+            const eye = d.normalize().negate().addScaledVector(UP, 0.35).normalize().multiplyScalar(f.dist).add(c);
+            const camQ0 = lookQuat(eye, c, new THREE.Quaternion());
+            f.obj.getWorldQuaternion(_q1);
+            f.qBase.copy(_q1).invert().multiply(camQ0);
+            f.yaw = 0;
+            f.pitch = 0;
             f.phase = 'enter';
           }
         }
       }
 
+      rigPose(f, c, g, q);
       if (f.phase === 'enter') {
-        g.copy(p).add(f.offset);
         const k = 1 - Math.exp(-dt * 6);
         camera.position.lerp(g, k);
-        controls.target.lerp(p, k);
-        const eps = size * 0.001;
-        if (camera.position.distanceTo(g) < eps && controls.target.distanceTo(p) < eps) { f.phase = 'track'; f.prev.copy(p); }
+        camera.quaternion.slerp(q, k);
+        if (camera.position.distanceTo(g) < size * 0.001 && camera.quaternion.angleTo(q) < 0.01) f.phase = 'track';
       } else {
-        // パーツの移動量だけ、カメラと注視点を一緒に平行移動（見回しはそのまま）
-        d.copy(p).sub(f.prev);
-        camera.position.add(d);
-        controls.target.add(d);
-        f.prev.copy(p);
+        camera.position.copy(g);
+        camera.quaternion.copy(q);
       }
-      controls.update();
+      // 注視点はカメラの正面に置いておく（視点共有の配信・全体視点へ戻る時のため）
+      camera.getWorldDirection(w);
+      controls.target.copy(camera.position).addScaledVector(w, Math.max(f.dist, size * 0.1));
     } else if (a) {
       // 「注目！」／全体視点へ戻る：滑らかに移動
       const k = 1 - Math.exp(-dt * 5);

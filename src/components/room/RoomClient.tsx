@@ -56,14 +56,31 @@ export default function RoomClient({ roomId }: { roomId: string }) {
 
   // 入室状態の復元（localStorage はクライアントのみ）
   useEffect(() => {
-    const wantsTeacher = new URLSearchParams(window.location.search).get('role') === 'teacher';
-    if (wantsTeacher) {
-      if (isTeacherAuthed(roomId)) setIsTeacher(true);
-      else setAskTeacher(true);
-    } else {
-      setSaved(loadIdentity());
-    }
-    setReady(true);
+    let cancelled = false;
+    (async () => {
+      const sp = new URLSearchParams(window.location.search);
+      if (sp.get('role') === 'teacher') {
+        const key = sp.get('key');
+        if (isTeacherAuthed(roomId)) {
+          setIsTeacher(true);
+        } else if (key) {
+          // 教員用リンクの入室キーを照合（合えばパスコード入力なしで入室）
+          const { data } = await supabase.from('rooms').select('teacher_passcode').eq('id', roomId).maybeSingle();
+          if (data && data.teacher_passcode === key) {
+            setTeacherAuthed(roomId);
+            setIsTeacher(true);
+          } else {
+            setAskTeacher(true);
+          }
+        } else {
+          setAskTeacher(true); // 以前のルーム（パスコード式）
+        }
+      } else {
+        setSaved(loadIdentity());
+      }
+      if (!cancelled) setReady(true);
+    })();
+    return () => { cancelled = true; };
   }, [roomId]);
 
   const showToast = (msg: string) => {
@@ -218,7 +235,8 @@ export default function RoomClient({ roomId }: { roomId: string }) {
 
   // ---- パーツ視点 ----
   const partBlocked: 'lock' | 'busy' | null = isTeacher ? null : room.target_lock ? 'lock' : csLocked || csFollow ? 'busy' : null;
-  const selectPart = (id: string) => { if (!partBlocked) setSelectedPartId(id); };
+  // 同じパーツをもう一度押すと選択を解除（水色の目印も消える）
+  const selectPart = (id: string) => { if (!partBlocked) setSelectedPartId((cur) => (cur === id ? null : id)); };
   const enterPart = () => { if (!partBlocked && selectedPartId) setPartFollow({ id: selectedPartId, mode: partMode }); };
   const exitPart = () => {
     if (partBlocked) return;
@@ -228,6 +246,17 @@ export default function RoomClient({ roomId }: { roomId: string }) {
   const changePartMode = (m: FollowMode) => {
     setPartMode(m);
     if (partFollow && !partBlocked) setPartFollow({ ...partFollow, mode: m });
+  };
+
+  // 教員用リンク（入室キー入り）。別の端末から先生として入り直すときに使う
+  const copyTeacherLink = async () => {
+    const url = `${window.location.origin}/room/${roomId}?role=teacher&key=${encodeURIComponent(room.teacher_passcode)}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast('教員用リンクをコピーしました。生徒には共有しないでください。');
+    } catch {
+      showToast('コピーできませんでした。');
+    }
   };
 
   const handlePlace = (pos: Vec3, norm: Vec3) => {
@@ -391,11 +420,16 @@ export default function RoomClient({ roomId }: { roomId: string }) {
         </div>
       </header>
 
-      {isTeacher && room.join_code && (
+      {isTeacher && (
         <div className="absolute right-3 top-3 z-40 rounded-xl bg-white/95 px-3 py-2 text-right shadow ring-1 ring-slate-200">
-          <p className="text-[11px] text-slate-500">生徒の入室用</p>
-          <p className="text-sm">ルームID <span className="font-mono text-lg font-bold tracking-widest">{room.join_code}</span></p>
-          <p className="text-sm">パスワード <span className="font-mono text-lg font-bold tracking-widest">{room.join_password}</span></p>
+          {room.join_code && (
+            <>
+              <p className="text-[11px] text-slate-500">生徒の入室用</p>
+              <p className="text-sm">ルームID <span className="font-mono text-lg font-bold tracking-widest">{room.join_code}</span></p>
+              <p className="text-sm">パスワード <span className="font-mono text-lg font-bold tracking-widest">{room.join_password}</span></p>
+            </>
+          )}
+          <button className="mt-1 text-xs text-slate-500 underline" onClick={() => void copyTeacherLink()}>教員用リンクをコピー</button>
         </div>
       )}
 
@@ -439,7 +473,17 @@ export default function RoomClient({ roomId }: { roomId: string }) {
         />
       )}
 
-      <div className="absolute bottom-3 left-3 z-30 flex flex-col items-start gap-2">
+      {/* 下段：ピン追加ボタン＋パーツ視点。横に広げ、先生パネル（左）・ピン詳細（右）と重ならない範囲に置く */}
+      <div className={`pointer-events-none absolute bottom-3 left-3 right-3 z-30 flex items-end gap-2 md:right-[25rem] ${isTeacher ? 'md:left-[19.5rem]' : ''}`}>
+        {!isTeacher && (
+          <div className="pointer-events-auto flex shrink-0 flex-col items-start gap-2">
+            {placeMode && <p className="rounded-lg bg-white/95 px-3 py-1 text-sm font-bold shadow">ピンを立てたい場所をタップ</p>}
+            <button className={`btn shadow ${placeMode ? 'btn-on' : ''}`} disabled={!canPlace} onClick={() => setPlaceMode((v) => !v)}>
+              {placeMode ? 'キャンセル' : 'ピンを立てる'}
+            </button>
+            {!placeMode && <p className="hidden rounded bg-slate-900/60 px-2 py-0.5 text-xs text-white md:block">モデルをダブルタップでも立てられます</p>}
+          </div>
+        )}
         <PartPanel
           parts={parts}
           selectedId={selectedPartId}
@@ -452,15 +496,6 @@ export default function RoomClient({ roomId }: { roomId: string }) {
           onExit={exitPart}
           onMode={changePartMode}
         />
-        {!isTeacher && (
-          <>
-            {placeMode && <p className="rounded-lg bg-white/95 px-3 py-1 text-sm font-bold shadow">ピンを立てたい場所をタップ</p>}
-            <button className={`btn shadow ${placeMode ? 'btn-on' : ''}`} disabled={!canPlace} onClick={() => setPlaceMode((v) => !v)}>
-              {placeMode ? 'キャンセル' : 'ピンを立てる'}
-            </button>
-            {!placeMode && <p className="rounded bg-slate-900/60 px-2 py-0.5 text-xs text-white">モデルをダブルタップでも立てられます</p>}
-          </>
-        )}
       </div>
 
       {selectedPin && (

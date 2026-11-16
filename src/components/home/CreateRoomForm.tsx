@@ -9,7 +9,7 @@ import { imageToGlb, imageToUsdz } from '@/lib/imageModel';
 
 export default function CreateRoomForm() {
   const [title, setTitle] = useState('');
-  const [passcode, setPasscode] = useState('');
+  const [tkey, setTkey] = useState(''); // 教員用リンクに埋め込む入室キー（自動発行）
   const [file, setFile] = useState<File | null>(null);
   const [mode, setMode] = useState<'glb' | 'image'>('glb');
   const [imgFile, setImgFile] = useState<File | null>(null);
@@ -65,25 +65,27 @@ export default function CreateRoomForm() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!hasModel || !title.trim() || !passcode.trim()) return;
+    if (!hasModel || !title.trim()) return;
     setBusy(true);
     setError(null);
     try {
       const blob = mode === 'image' ? await imageToGlb(imgFile!, widthCm) : file!;
       const glb_url = await uploadFile(`models/${uuid()}.glb`, blob, 'model/gltf-binary');
       // 6桁のルームIDを自動発行（重複したら作り直す）
+      const key = uuid();
       let created: { id: string; code: string } | null = null;
       for (let i = 0; i < 5 && !created; i++) {
         const c = String(Math.floor(Math.random() * 900000) + 100000);
         const { data, error: err } = await supabase
           .from('rooms')
-          .insert({ title: title.trim(), glb_url, teacher_passcode: passcode, join_code: c, join_password: pw })
+          .insert({ title: title.trim(), glb_url, teacher_passcode: key, join_code: c, join_password: pw })
           .select('id')
           .single();
         if (!err) created = { id: data.id, code: c };
         else if (err.code !== '23505') throw err;
       }
       if (!created) throw new Error('ルームIDを発行できませんでした。もう一度お試しください。');
+      setTkey(key);
       setTeacherAuthed(created.id); // 作成した端末はそのまま教員として入室できる
       setCode(created.code);
       setRoomId(created.id);
@@ -103,7 +105,7 @@ export default function CreateRoomForm() {
   if (roomId) {
     const origin = window.location.origin;
     const studentUrl = `${origin}/room/${roomId}`;
-    const teacherUrl = `${studentUrl}?role=teacher`;
+    const teacherUrl = `${studentUrl}?role=teacher&key=${tkey}`;
     return (
       <div className="mt-4 space-y-5">
         <p className="font-bold text-emerald-700">ルームをつくりました。</p>
@@ -126,7 +128,7 @@ export default function CreateRoomForm() {
           </div>
         </div>
         <div>
-          <p className="label">教員用入室リンク（パスコードが必要です）</p>
+          <p className="label">教員用入室リンク（先生だけの入口です。生徒には共有しないでください）</p>
           <p className="break-all rounded-lg bg-slate-100 p-2 text-sm">{teacherUrl}</p>
           <div className="mt-2 flex gap-2">
             <button className="btn" onClick={() => copy('t', teacherUrl)}>{copied === 't' ? 'コピーしました' : 'リンクをコピー'}</button>
@@ -189,12 +191,8 @@ export default function CreateRoomForm() {
         <label className="label" htmlFor="jp">生徒用パスワード（数字4桁）</label>
         <input id="jp" className="input" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} value={pw} onChange={(e) => setPw(e.target.value.replace(/\D/g, ''))} placeholder="例：1234" required />
       </div>
-      <div>
-        <label className="label" htmlFor="p">教員用パスコード</label>
-        <input id="p" className="input" value={passcode} onChange={(e) => setPasscode(e.target.value)} placeholder="先生だけが知っている言葉" required />
-      </div>
       {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
-      <button className="btn btn-primary w-full" disabled={busy || !hasModel || !title.trim() || !passcode.trim() || pw.length !== 4}>
+      <button className="btn btn-primary w-full" disabled={busy || !hasModel || !title.trim() || pw.length !== 4}>
         {busy ? 'アップロード中…' : 'ルームをつくる'}
       </button>
     </form>

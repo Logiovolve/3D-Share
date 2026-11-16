@@ -15,7 +15,7 @@ export default function TeacherPanel({ room, pinCount, groupFilter, clips, camLo
   const loop = anim?.loop !== false;
 
   return (
-    <section className="fixed left-3 top-16 z-20 max-h-[calc(100dvh-9rem)] w-72 max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-2xl bg-white/95 p-3 shadow-xl ring-1 ring-slate-200 backdrop-blur">
+    <section className="fixed left-3 top-16 z-20 max-h-[calc(100dvh-5rem)] w-72 max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-2xl bg-white/95 p-3 shadow-xl ring-1 ring-slate-200 backdrop-blur">
       <button className="flex w-full items-center justify-between font-bold" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
         教員コントロール <span aria-hidden>{open ? '−' : '＋'}</span>
       </button>

@@ -3,8 +3,8 @@ import { useMemo, useState } from 'react';
 import type { FollowMode, FollowState, PartInfo } from '@/lib/types';
 
 const MODES: { mode: FollowMode; title: string; note: string }[] = [
-  { mode: 'center', title: '① 対象物の中心（一人称視点）', note: 'パーツの中に入って、一緒に動きます。' },
-  { mode: 'behind', title: '② 少し後ろから追従（後方視点）', note: '進む向きの後ろから、前後の様子を見渡せます。' },
+  { mode: 'center', title: '① 対象物の中心（一人称）', note: 'パーツの中に入り、向きも一緒に動きます。' },
+  { mode: 'behind', title: '② 少し後ろから追従（後方）', note: '進む向きの後ろから、前後を見渡せます。' },
 ];
 
 export default function PartPanel({ parts, selectedId, follow, mode, blockedReason, isTeacher, onSelect, onEnter, onExit, onMode }: {
@@ -27,51 +27,47 @@ export default function PartPanel({ parts, selectedId, follow, mode, blockedReas
   // 先生がロック中／カメラを先生に預けている間は、選択も切り替えもできない（一覧・ボタンは出さない）
   if (blockedReason) {
     return (
-      <div role="status" className="rounded-full bg-white/95 px-3 py-2 text-xs font-bold text-slate-600 shadow ring-1 ring-slate-200">
+      <div role="status" className="pointer-events-auto rounded-full bg-white/95 px-3 py-2 text-xs font-bold text-slate-600 shadow ring-1 ring-slate-200">
         {follow && cur ? `「${cur.name}」の視点（先生が固定中）` : blockedReason === 'lock' ? 'パーツ視点：先生がロック中' : 'パーツ視点：先生の視点に合わせています'}
       </div>
     );
   }
 
   return (
-    <section className="w-72 max-w-[calc(100vw-1.5rem)] rounded-2xl bg-white/95 p-3 shadow-xl ring-1 ring-slate-200 backdrop-blur">
-      {follow && (
-        <button className="btn btn-primary mb-2 w-full" onClick={onExit}>全体視点に戻る</button>
-      )}
-      <button className="flex w-full items-center justify-between text-left font-bold" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        <span>パーツ視点{follow && cur ? `：${cur.name}` : ''}</span>
-        <span aria-hidden>{open ? '−' : '＋'}</span>
-      </button>
+    <section className="pointer-events-auto min-w-0 flex-1 rounded-2xl bg-white/95 p-2 shadow-xl ring-1 ring-slate-200 backdrop-blur md:max-w-[46rem]">
+      <div className="flex items-center gap-2">
+        {follow && <button className="btn btn-primary !min-h-10 shrink-0" onClick={onExit}>全体視点に戻る</button>}
+        <button className="btn !min-h-10 min-w-0 flex-1 !justify-between" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+          <span className="truncate">パーツ視点{follow && cur ? `：${cur.name}` : ''}</span>
+          <span aria-hidden className="shrink-0 text-xs">{open ? '▾ とじる' : '▴ ひらく'}</span>
+        </button>
+      </div>
 
       {open && (
-        <div className="mt-3 space-y-3">
-          <div>
-            <p className="label">追従のしかた</p>
-            <div className="grid gap-2" role="group" aria-label="追従のしかた">
-              {MODES.map((m) => (
-                <button key={m.mode} className={`btn !items-start !justify-start !text-left ${mode === m.mode ? 'btn-on' : ''}`} aria-pressed={mode === m.mode} onClick={() => onMode(m.mode)}>
-                  <span className="flex flex-col">
-                    <span className="text-sm">{m.title}</span>
-                    <span className="text-[11px] font-normal opacity-80">{m.note}</span>
-                  </span>
-                </button>
-              ))}
-            </div>
+        // 横に3列：追従のしかた ／ 選んだパーツ ／ 一覧（高さを抑えて、他のメニューに重ならないように）
+        <div className="mt-2 grid max-h-[42dvh] gap-3 overflow-y-auto md:grid-cols-[13rem_minmax(0,1fr)_15rem]">
+          <div className="grid content-start gap-2" role="group" aria-label="追従のしかた">
+            {MODES.map((m) => (
+              <button key={m.mode} className={`btn !items-start !justify-start !text-left ${mode === m.mode ? 'btn-on' : ''}`} aria-pressed={mode === m.mode} onClick={() => onMode(m.mode)}>
+                <span className="flex flex-col">
+                  <span className="text-sm">{m.title}</span>
+                  <span className="text-[11px] font-normal opacity-80">{m.note}</span>
+                </span>
+              </button>
+            ))}
           </div>
 
-          <div>
-            <p className="text-sm">
-              選んだパーツ：<span className="font-bold">{sel ? sel.name : 'まだ選んでいません'}</span>
-            </p>
-            <p className="text-xs text-slate-500">モデルをタップ、または下の一覧から選びます。</p>
+          <div className="min-w-0 content-start">
+            <p className="text-sm">選んだパーツ：<span className="font-bold">{sel ? sel.name : 'まだ選んでいません'}</span></p>
+            <p className="text-xs text-slate-500">モデルをタップ、または右の一覧から選びます。同じパーツをもう一度押すと解除できます。</p>
             <button className="btn btn-primary mt-2 w-full" disabled={!sel} onClick={onEnter}>この視点になる</button>
             {isTeacher && <p className="mt-1 text-xs text-slate-500">この状態で「注目！」を押すと、全員が同じパーツ・同じ追従のしかたになります。</p>}
           </div>
 
-          <div>
+          <div className="min-w-0">
             <label className="sr-only" htmlFor="pq">パーツを検索</label>
             <input id="pq" className="input !py-1.5 !text-sm" value={q} onChange={(e) => setQ(e.target.value)} placeholder={`パーツを検索（${parts.length}個）`} />
-            <ul className="mt-2 max-h-48 space-y-1 overflow-y-auto">
+            <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto">
               {filtered.slice(0, 200).map((p) => (
                 <li key={p.id}>
                   <button
