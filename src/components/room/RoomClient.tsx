@@ -9,7 +9,7 @@ import { useCameraChannel, type LiveCamera } from '@/hooks/useCameraChannel';
 import { isTeacherAuthed, loadIdentity, setTeacherAuthed } from '@/lib/identity';
 import { prepareImage, uploadFile } from '@/lib/upload';
 import { errMsg, uuid } from '@/lib/util';
-import type { AnimState, Identity, Pin, Room, Vec3 } from '@/lib/types';
+import type { AnimState, FollowMode, FollowState, Identity, PartInfo, Pin, Room, Vec3 } from '@/lib/types';
 import type { ClipInfo, ViewerApi, ViewerPin } from './Viewer3D';
 import JoinModal from './JoinModal';
 import TeacherAuthModal from './TeacherAuthModal';
@@ -17,6 +17,7 @@ import PinFormModal, { type PinFormValues } from './PinFormModal';
 import PinDetailPanel from './PinDetailPanel';
 import TeacherPanel from './TeacherPanel';
 import PinListModal from './PinListModal';
+import PartPanel from './PartPanel';
 
 const Viewer3D = dynamic(() => import('./Viewer3D'), {
   ssr: false,
@@ -41,6 +42,10 @@ export default function RoomClient({ roomId }: { roomId: string }) {
   const [groupFilter, setGroupFilter] = useState('all');
   const [listOpen, setListOpen] = useState(false);
   const [clips, setClips] = useState<ClipInfo[]>([]);
+  const [parts, setParts] = useState<PartInfo[]>([]);
+  const [selectedPartId, setSelectedPartId] = useState<string | null>(null);
+  const [partFollow, setPartFollow] = useState<FollowState | null>(null);
+  const [partMode, setPartMode] = useState<FollowMode>('center');
   const [toast, setToast] = useState<string | null>(null);
   const apiRef = useRef<ViewerApi | null>(null);
   const roomRef = useRef<Room | null>(null);
@@ -90,6 +95,31 @@ export default function RoomClient({ roomId }: { roomId: string }) {
     [visiblePins, numbers, anonymous],
   );
 
+  // 先生の「注目！」にパーツ指定があれば、生徒も同じパーツ・同じ追従のしかたへ（指定なしなら通常視点へ）
+  const syncKey = room?.camera_sync?.updated_at ?? null;
+  const csLocked = !!room?.camera_sync?.locked;
+  const csFollow = !!room?.camera_sync?.follow;
+  const lastSyncKey = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (!room) return;
+    if (lastSyncKey.current === undefined) { lastSyncKey.current = syncKey; return; } // 入室時の既存値は無視
+    if (syncKey === lastSyncKey.current) return;
+    lastSyncKey.current = syncKey;
+    if (isTeacher) return;
+    const cs = room.camera_sync;
+    if (cs?.target_id && !cs.locked && !cs.follow) {
+      setPartFollow({ id: cs.target_id, mode: cs.target_mode ?? 'center' });
+      setSelectedPartId(cs.target_id);
+    } else {
+      setPartFollow(null);
+    }
+  }, [room, syncKey, isTeacher]);
+
+  // 画面ロック／視点共有中の生徒は、カメラを先生に預けているので自分のパーツ視点は解除
+  useEffect(() => {
+    if (!isTeacher && (csLocked || csFollow)) setPartFollow(null);
+  }, [isTeacher, csLocked, csFollow]);
+
   if (status === 'loading' || !ready) {
     return <div className="grid h-dvh place-items-center text-slate-600">読み込み中…</div>;
   }
@@ -110,7 +140,7 @@ export default function RoomClient({ roomId }: { roomId: string }) {
   const selectedPin = visiblePins.find((p) => p.id === selectedId) ?? null;
 
   /* ---------- 操作 ---------- */
-  const updateRoom = async (patch: Partial<Pick<Room, 'display_mode' | 'is_locked' | 'camera_sync' | 'anim_state' | 'shared_filter'>>) => {
+  const updateRoom = async (patch: Partial<Pick<Room, 'display_mode' | 'is_locked' | 'camera_sync' | 'anim_state' | 'shared_filter' | 'target_lock'>>) => {
     setRoom((r) => (r ? { ...r, ...patch } : r));
     const { error } = await supabase.from('rooms').update(patch).eq('id', roomId);
     if (error) showToast(`設定を保存できませんでした：${errMsg(error)}`);
@@ -122,8 +152,15 @@ export default function RoomClient({ roomId }: { roomId: string }) {
     if (!cam) return showToast('カメラの準備ができていません。');
     const locked = opts?.lock ?? room.camera_sync?.locked ?? false;
     const follow = opts?.follow ?? room.camera_sync?.follow ?? false;
-    void updateRoom({ camera_sync: { ...cam, locked, follow, updated_at: new Date().toISOString() } });
-    showToast(opts?.lock ? '画面をロックしました。' : opts?.follow ? '視点共有を始めました。' : '全員の視点をそろえました。');
+    // 先生がパーツ視点のときは、そのパーツ・追従のしかたも一緒に配信する
+    const tgt = partFollow ? { target_id: partFollow.id, target_mode: partFollow.mode } : { target_id: null };
+    void updateRoom({ camera_sync: { ...cam, locked, follow, ...tgt, updated_at: new Date().toISOString() } });
+    showToast(
+      opts?.lock ? '画面をロックしました。'
+        : opts?.follow ? '視点共有を始めました。'
+        : partFollow ? '全員を同じパーツ視点にそろえました。'
+        : '全員の視点をそろえました。',
+    );
   };
 
   // 連動中：カメラの動きを配信し、動きが止まったらDBにも最後の視点を保存（途中入室・再読込用）
@@ -177,6 +214,20 @@ export default function RoomClient({ roomId }: { roomId: string }) {
     const maxDur = Math.max(0, ...clips.map((c) => c.duration));
     if (patch.playing && next.loop === false && next.time >= maxDur - 0.02) next.time = 0;
     void updateRoom({ anim_state: next });
+  };
+
+  // ---- パーツ視点 ----
+  const partBlocked: 'lock' | 'busy' | null = isTeacher ? null : room.target_lock ? 'lock' : csLocked || csFollow ? 'busy' : null;
+  const selectPart = (id: string) => { if (!partBlocked) setSelectedPartId(id); };
+  const enterPart = () => { if (!partBlocked && selectedPartId) setPartFollow({ id: selectedPartId, mode: partMode }); };
+  const exitPart = () => {
+    if (partBlocked) return;
+    setPartFollow(null);
+    apiRef.current?.goOverview();
+  };
+  const changePartMode = (m: FollowMode) => {
+    setPartMode(m);
+    if (partFollow && !partBlocked) setPartFollow({ ...partFollow, mode: m });
   };
 
   const handlePlace = (pos: Vec3, norm: Vec3) => {
@@ -298,6 +349,11 @@ export default function RoomClient({ roomId }: { roomId: string }) {
           liveCamRef={liveCamRef}
           streaming={isTeacher && !!room.camera_sync?.follow}
           onCameraStream={streamCamera}
+          follow={partFollow}
+          selectedPartId={selectedPartId}
+          partsEnabled={!partBlocked}
+          onPartSelect={selectPart}
+          onParts={setParts}
         />
       </div>
 
@@ -377,19 +433,35 @@ export default function RoomClient({ roomId }: { roomId: string }) {
           camFollow={!!room.camera_sync?.follow}
           onCamLock={toggleCamLock}
           onCamFollow={toggleFollow}
+          targetLock={!!room.target_lock}
+          onTargetLock={() => void updateRoom({ target_lock: !room.target_lock })}
           onOpenList={() => setListOpen(true)}
         />
       )}
 
-      {!isTeacher && (
-        <div className="absolute bottom-3 left-3 z-20 flex flex-col items-start gap-2">
-          {placeMode && <p className="rounded-lg bg-white/95 px-3 py-1 text-sm font-bold shadow">ピンを立てたい場所をタップ</p>}
-          <button className={`btn shadow ${placeMode ? 'btn-on' : ''}`} disabled={!canPlace} onClick={() => setPlaceMode((v) => !v)}>
-            {placeMode ? 'キャンセル' : 'ピンを立てる'}
-          </button>
-          {!placeMode && <p className="rounded bg-slate-900/60 px-2 py-0.5 text-xs text-white">モデルをダブルタップでも立てられます</p>}
-        </div>
-      )}
+      <div className="absolute bottom-3 left-3 z-30 flex flex-col items-start gap-2">
+        <PartPanel
+          parts={parts}
+          selectedId={selectedPartId}
+          follow={partFollow}
+          mode={partMode}
+          blockedReason={partBlocked}
+          isTeacher={isTeacher}
+          onSelect={selectPart}
+          onEnter={enterPart}
+          onExit={exitPart}
+          onMode={changePartMode}
+        />
+        {!isTeacher && (
+          <>
+            {placeMode && <p className="rounded-lg bg-white/95 px-3 py-1 text-sm font-bold shadow">ピンを立てたい場所をタップ</p>}
+            <button className={`btn shadow ${placeMode ? 'btn-on' : ''}`} disabled={!canPlace} onClick={() => setPlaceMode((v) => !v)}>
+              {placeMode ? 'キャンセル' : 'ピンを立てる'}
+            </button>
+            {!placeMode && <p className="rounded bg-slate-900/60 px-2 py-0.5 text-xs text-white">モデルをダブルタップでも立てられます</p>}
+          </>
+        )}
+      </div>
 
       {selectedPin && (
         <PinDetailPanel

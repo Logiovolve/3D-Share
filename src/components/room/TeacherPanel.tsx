@@ -3,7 +3,8 @@ import { useState } from 'react';
 import { GROUPS } from '@/lib/groups';
 import type { AnimState, DisplayMode, Room } from '@/lib/types';
 
-export default function TeacherPanel({ room, pinCount, groupFilter, clips, camLocked, camFollow, filterShared, onFilter, onToggleFilterShared, onMode, onLock, onSync, onCamLock, onCamFollow, onOpenList, onAnim }: {
+export default function TeacherPanel({ room, pinCount, groupFilter, clips, camLocked, camFollow, filterShared, onFilter, onToggleFilterShared, onMode, onLock, onSync, onCamLock, onCamFollow, targetLock, onTargetLock, onOpenList, onAnim }: {
+  targetLock: boolean; onTargetLock: () => void;
   room: Room; pinCount: number; groupFilter: string; clips: { name: string; duration: number }[]; camLocked: boolean; camFollow: boolean;
   filterShared: boolean; onToggleFilterShared: () => void; onCamFollow: () => void;
   onFilter: (g: string) => void; onMode: (m: DisplayMode) => void; onLock: (v: boolean) => void;
@@ -14,7 +15,7 @@ export default function TeacherPanel({ room, pinCount, groupFilter, clips, camLo
   const loop = anim?.loop !== false;
 
   return (
-    <section className="fixed left-3 top-16 z-20 max-h-[calc(100dvh-5rem)] w-72 max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-2xl bg-white/95 p-3 shadow-xl ring-1 ring-slate-200 backdrop-blur">
+    <section className="fixed left-3 top-16 z-20 max-h-[calc(100dvh-9rem)] w-72 max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-2xl bg-white/95 p-3 shadow-xl ring-1 ring-slate-200 backdrop-blur">
       <button className="flex w-full items-center justify-between font-bold" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
         教員コントロール <span aria-hidden>{open ? '−' : '＋'}</span>
       </button>
@@ -52,6 +53,14 @@ export default function TeacherPanel({ room, pinCount, groupFilter, clips, camLo
               {camFollow ? '視点共有中（タップで解除）' : '視点を共有する'}
             </button>
             <p className="text-xs text-slate-500">生徒は操作できず、先生のカメラの動きを真似します。</p>
+          </div>
+
+          <div className="space-y-2 rounded-xl bg-slate-50 p-2">
+            <p className="label !mb-0">パーツ視点</p>
+            <button className={`btn w-full ${targetLock ? 'btn-on' : ''}`} onClick={onTargetLock} aria-pressed={targetLock}>
+              {targetLock ? '対象物視点の切り替えをロック中（タップで解除）' : '対象物視点の切り替えをロックする'}
+            </button>
+            <p className="text-xs text-slate-500">ONの間、生徒はパーツの選択・視点の切り替えができません。先生がパーツ視点で「注目！」を押すと、全員が同じパーツ・追従のしかたに切り替わります。</p>
           </div>
 
           {clips.length > 0 && (
